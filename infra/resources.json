@@ -1,0 +1,993 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.41.2.15936",
+      "templateHash": "4676964669320608723"
+    }
+  },
+  "parameters": {
+    "environmentName": {
+      "type": "string",
+      "metadata": {
+        "description": "The azd environment name."
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Azure region for all regional resources."
+      }
+    },
+    "vnetAddressPrefix": {
+      "type": "string",
+      "defaultValue": "10.42.0.0/16",
+      "metadata": {
+        "description": "Address space for the virtual network."
+      }
+    },
+    "appGatewaySubnetPrefix": {
+      "type": "string",
+      "defaultValue": "10.42.0.0/24",
+      "metadata": {
+        "description": "Subnet prefix for Application Gateway."
+      }
+    },
+    "privateEndpointSubnetPrefix": {
+      "type": "string",
+      "defaultValue": "10.42.1.0/24",
+      "metadata": {
+        "description": "Subnet prefix for private endpoints."
+      }
+    },
+    "logicAppIntegrationSubnetPrefix": {
+      "type": "string",
+      "defaultValue": "10.42.2.0/24",
+      "metadata": {
+        "description": "Subnet prefix delegated for Logic App outbound virtual network integration."
+      }
+    },
+    "logicAppPlanSkuName": {
+      "type": "string",
+      "defaultValue": "WS1",
+      "allowedValues": [
+        "WS1",
+        "WS2",
+        "WS3"
+      ],
+      "metadata": {
+        "description": "Workflow Standard SKU for the Logic App Standard plan."
+      }
+    },
+    "logicAppPlanCapacity": {
+      "type": "int",
+      "defaultValue": 2,
+      "minValue": 1,
+      "metadata": {
+        "description": "Minimum worker count for the Logic App Standard plan."
+      }
+    },
+    "storageSkuName": {
+      "type": "string",
+      "defaultValue": "Standard_ZRS",
+      "allowedValues": [
+        "Standard_LRS",
+        "Standard_ZRS",
+        "Standard_GRS",
+        "Standard_GZRS"
+      ],
+      "metadata": {
+        "description": "Storage account redundancy. Standard_ZRS is used by default for resiliency."
+      }
+    },
+    "appGatewayMinCapacity": {
+      "type": "int",
+      "defaultValue": 2,
+      "minValue": 1,
+      "metadata": {
+        "description": "Application Gateway autoscale minimum capacity."
+      }
+    },
+    "appGatewayMaxCapacity": {
+      "type": "int",
+      "defaultValue": 4,
+      "minValue": 2,
+      "metadata": {
+        "description": "Application Gateway autoscale maximum capacity."
+      }
+    },
+    "appGatewayListenerPort": {
+      "type": "int",
+      "defaultValue": 80,
+      "metadata": {
+        "description": "Application Gateway listener port. The backend connection to the Logic App uses HTTPS."
+      }
+    },
+    "availabilityZones": {
+      "type": "array",
+      "defaultValue": [
+        "1",
+        "2",
+        "3"
+      ],
+      "metadata": {
+        "description": "Availability zones for zonal resources. Use an empty array in regions that do not support zones."
+      }
+    }
+  },
+  "variables": {
+    "resourceToken": "[uniqueString(subscription().id, resourceGroup().id, parameters('location'), parameters('environmentName'))]",
+    "baseTags": {
+      "workload": "la-appgw-demo"
+    },
+    "applicationGatewayName": "[format('azagw{0}', variables('resourceToken'))]",
+    "appGatewayFrontendIpConfigName": "[format('azfip{0}', variables('resourceToken'))]",
+    "appGatewayFrontendPortName": "[format('azfpt{0}', variables('resourceToken'))]",
+    "appGatewayHttpListenerName": "[format('azlst{0}', variables('resourceToken'))]",
+    "appGatewayBackendPoolName": "[format('azbep{0}', variables('resourceToken'))]",
+    "appGatewayBackendSettingsName": "[format('azbes{0}', variables('resourceToken'))]",
+    "appGatewayProbeName": "[format('azprb{0}', variables('resourceToken'))]",
+    "appGatewayRuleName": "[format('azrul{0}', variables('resourceToken'))]",
+    "appGatewaySubnetName": "[format('azags{0}', variables('resourceToken'))]",
+    "appInsightsName": "[format('azai{0}', variables('resourceToken'))]",
+    "appServicePlanName": "[format('azasp{0}', variables('resourceToken'))]",
+    "contentShareName": "[format('azcnt{0}', variables('resourceToken'))]",
+    "identityName": "[format('azid{0}', variables('resourceToken'))]",
+    "logAnalyticsName": "[format('azlaw{0}', variables('resourceToken'))]",
+    "logicAppIntegrationSubnetName": "[format('azint{0}', variables('resourceToken'))]",
+    "logicAppName": "[format('azla{0}', variables('resourceToken'))]",
+    "logicAppPrivateEndpointName": "[format('azpel{0}', variables('resourceToken'))]",
+    "logicAppPrivateEndpointConnectionName": "[format('azscl{0}', variables('resourceToken'))]",
+    "logicAppPrivateDnsLinkName": "[format('azvwl{0}', variables('resourceToken'))]",
+    "logicAppPrivateDnsZoneGroupName": "[format('azdgl{0}', variables('resourceToken'))]",
+    "privateEndpointSubnetName": "[format('azpep{0}', variables('resourceToken'))]",
+    "publicIpName": "[format('azpip{0}', variables('resourceToken'))]",
+    "storageAccountName": "[format('azst{0}', variables('resourceToken'))]",
+    "vnetName": "[format('azvnt{0}', variables('resourceToken'))]",
+    "appGatewayNsgName": "[format('aznsg{0}', variables('resourceToken'))]",
+    "appGatewayWafPolicyName": "[format('azwaf{0}', variables('resourceToken'))]",
+    "storageDnsSuffix": "[environment().suffixes.storage]",
+    "storagePrivateLinkServices": [
+      {
+        "service": "blob",
+        "dnsZoneName": "[format('privatelink.blob.{0}', variables('storageDnsSuffix'))]",
+        "endpointPrefix": "peb",
+        "connectionPrefix": "scb",
+        "dnsLinkPrefix": "vlb",
+        "zoneGroupPrefix": "dgb"
+      },
+      {
+        "service": "file",
+        "dnsZoneName": "[format('privatelink.file.{0}', variables('storageDnsSuffix'))]",
+        "endpointPrefix": "pef",
+        "connectionPrefix": "scf",
+        "dnsLinkPrefix": "vlf",
+        "zoneGroupPrefix": "dgf"
+      },
+      {
+        "service": "queue",
+        "dnsZoneName": "[format('privatelink.queue.{0}', variables('storageDnsSuffix'))]",
+        "endpointPrefix": "peq",
+        "connectionPrefix": "scq",
+        "dnsLinkPrefix": "vlq",
+        "zoneGroupPrefix": "dgq"
+      },
+      {
+        "service": "table",
+        "dnsZoneName": "[format('privatelink.table.{0}', variables('storageDnsSuffix'))]",
+        "endpointPrefix": "pet",
+        "connectionPrefix": "sct",
+        "dnsLinkPrefix": "vlt",
+        "zoneGroupPrefix": "dgt"
+      }
+    ]
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "apiVersion": "2025-07-01",
+      "name": "[variables('logAnalyticsName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('baseTags')]",
+      "properties": {
+        "sku": {
+          "name": "PerGB2018"
+        },
+        "retentionInDays": 30,
+        "publicNetworkAccessForIngestion": "Enabled",
+        "publicNetworkAccessForQuery": "Enabled"
+      }
+    },
+    {
+      "type": "Microsoft.Insights/components",
+      "apiVersion": "2020-02-02-preview",
+      "name": "[variables('appInsightsName')]",
+      "location": "[parameters('location')]",
+      "kind": "web",
+      "tags": "[variables('baseTags')]",
+      "properties": {
+        "Application_Type": "web",
+        "Flow_Type": "Bluefield",
+        "Request_Source": "rest",
+        "WorkspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2025-05-31-preview",
+      "name": "[variables('identityName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('baseTags')]"
+    },
+    {
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "apiVersion": "2025-07-01",
+      "name": "[variables('appGatewayNsgName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('baseTags')]",
+      "properties": {
+        "securityRules": [
+          {
+            "name": "Allow-Http-From-Internet",
+            "properties": {
+              "priority": 100,
+              "direction": "Inbound",
+              "access": "Allow",
+              "protocol": "Tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "[string(parameters('appGatewayListenerPort'))]",
+              "sourceAddressPrefix": "Internet",
+              "destinationAddressPrefix": "*"
+            }
+          },
+          {
+            "name": "Allow-GatewayManager",
+            "properties": {
+              "priority": 110,
+              "direction": "Inbound",
+              "access": "Allow",
+              "protocol": "*",
+              "sourcePortRange": "*",
+              "destinationPortRange": "65200-65535",
+              "sourceAddressPrefix": "GatewayManager",
+              "destinationAddressPrefix": "*"
+            }
+          },
+          {
+            "name": "Allow-AzureLoadBalancer",
+            "properties": {
+              "priority": 120,
+              "direction": "Inbound",
+              "access": "Allow",
+              "protocol": "*",
+              "sourcePortRange": "*",
+              "destinationPortRange": "*",
+              "sourceAddressPrefix": "AzureLoadBalancer",
+              "destinationAddressPrefix": "*"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2025-07-01",
+      "name": "[variables('vnetName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('baseTags')]",
+      "properties": {
+        "addressSpace": {
+          "addressPrefixes": [
+            "[parameters('vnetAddressPrefix')]"
+          ]
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/virtualNetworks/subnets",
+      "apiVersion": "2025-07-01",
+      "name": "[format('{0}/{1}', variables('vnetName'), variables('appGatewaySubnetName'))]",
+      "properties": {
+        "addressPrefix": "[parameters('appGatewaySubnetPrefix')]",
+        "networkSecurityGroup": {
+          "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('appGatewayNsgName'))]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkSecurityGroups', variables('appGatewayNsgName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/virtualNetworks/subnets",
+      "apiVersion": "2025-07-01",
+      "name": "[format('{0}/{1}', variables('vnetName'), variables('privateEndpointSubnetName'))]",
+      "properties": {
+        "addressPrefix": "[parameters('privateEndpointSubnetPrefix')]",
+        "privateEndpointNetworkPolicies": "Disabled"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/virtualNetworks/subnets",
+      "apiVersion": "2025-07-01",
+      "name": "[format('{0}/{1}', variables('vnetName'), variables('logicAppIntegrationSubnetName'))]",
+      "properties": {
+        "addressPrefix": "[parameters('logicAppIntegrationSubnetPrefix')]",
+        "delegations": [
+          {
+            "name": "[format('azdlg{0}', variables('resourceToken'))]",
+            "properties": {
+              "serviceName": "Microsoft.Web/serverFarms"
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2025-08-01",
+      "name": "[variables('storageAccountName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('baseTags')]",
+      "sku": {
+        "name": "[parameters('storageSkuName')]"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "accessTier": "Hot",
+        "allowBlobPublicAccess": false,
+        "allowCrossTenantReplication": false,
+        "allowSharedKeyAccess": true,
+        "defaultToOAuthAuthentication": true,
+        "dnsEndpointType": "Standard",
+        "minimumTlsVersion": "TLS1_2",
+        "publicNetworkAccess": "Disabled",
+        "supportsHttpsTrafficOnly": true,
+        "networkAcls": {
+          "bypass": "AzureServices",
+          "defaultAction": "Deny"
+        },
+        "encryption": {
+          "keySource": "Microsoft.Storage",
+          "services": {
+            "blob": {
+              "enabled": true,
+              "keyType": "Account"
+            },
+            "file": {
+              "enabled": true,
+              "keyType": "Account"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices",
+      "apiVersion": "2025-08-01",
+      "name": "[format('{0}/{1}', variables('storageAccountName'), 'default')]",
+      "properties": {
+        "deleteRetentionPolicy": {
+          "enabled": true,
+          "days": 7
+        },
+        "containerDeleteRetentionPolicy": {
+          "enabled": true,
+          "days": 7
+        },
+        "isVersioningEnabled": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/fileServices",
+      "apiVersion": "2025-08-01",
+      "name": "[format('{0}/{1}', variables('storageAccountName'), 'default')]",
+      "properties": {
+        "shareDeleteRetentionPolicy": {
+          "enabled": true,
+          "days": 7
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/fileServices/shares",
+      "apiVersion": "2025-08-01",
+      "name": "[format('{0}/{1}/{2}', variables('storageAccountName'), 'default', variables('contentShareName'))]",
+      "properties": {
+        "accessTier": "TransactionOptimized",
+        "enabledProtocols": "SMB",
+        "shareQuota": 5120
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/fileServices', variables('storageAccountName'), 'default')]"
+      ]
+    },
+    {
+      "copy": {
+        "name": "storagePrivateDnsZones",
+        "count": "[length(variables('storagePrivateLinkServices'))]"
+      },
+      "type": "Microsoft.Network/privateDnsZones",
+      "apiVersion": "2024-06-01",
+      "name": "[variables('storagePrivateLinkServices')[copyIndex()].dnsZoneName]",
+      "location": "global",
+      "tags": "[variables('baseTags')]"
+    },
+    {
+      "copy": {
+        "name": "storagePrivateDnsLinks",
+        "count": "[length(variables('storagePrivateLinkServices'))]"
+      },
+      "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+      "apiVersion": "2024-06-01",
+      "name": "[format('{0}/{1}', variables('storagePrivateLinkServices')[copyIndex()].dnsZoneName, format('az{0}{1}', variables('storagePrivateLinkServices')[copyIndex()].dnsLinkPrefix, variables('resourceToken')))]",
+      "location": "global",
+      "tags": "[variables('baseTags')]",
+      "properties": {
+        "registrationEnabled": false,
+        "virtualNetwork": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', variables('storagePrivateLinkServices')[copyIndex()].dnsZoneName)]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "copy": {
+        "name": "storagePrivateEndpoints",
+        "count": "[length(variables('storagePrivateLinkServices'))]"
+      },
+      "type": "Microsoft.Network/privateEndpoints",
+      "apiVersion": "2025-07-01",
+      "name": "[format('az{0}{1}', variables('storagePrivateLinkServices')[copyIndex()].endpointPrefix, variables('resourceToken'))]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('baseTags')]",
+      "properties": {
+        "subnet": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('privateEndpointSubnetName'))]"
+        },
+        "privateLinkServiceConnections": [
+          {
+            "name": "[format('az{0}{1}', variables('storagePrivateLinkServices')[copyIndex()].connectionPrefix, variables('resourceToken'))]",
+            "properties": {
+              "privateLinkServiceId": "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]",
+              "groupIds": [
+                "[variables('storagePrivateLinkServices')[copyIndex()].service]"
+              ]
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('privateEndpointSubnetName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+      ]
+    },
+    {
+      "copy": {
+        "name": "storagePrivateDnsZoneGroups",
+        "count": "[length(variables('storagePrivateLinkServices'))]"
+      },
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "apiVersion": "2025-07-01",
+      "name": "[format('{0}/{1}', format('az{0}{1}', variables('storagePrivateLinkServices')[copyIndex()].endpointPrefix, variables('resourceToken')), format('az{0}{1}', variables('storagePrivateLinkServices')[copyIndex()].zoneGroupPrefix, variables('resourceToken')))]",
+      "properties": {
+        "privateDnsZoneConfigs": [
+          {
+            "name": "[variables('storagePrivateLinkServices')[copyIndex()].service]",
+            "properties": {
+              "privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', variables('storagePrivateLinkServices')[copyIndex()].dnsZoneName)]"
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones/virtualNetworkLinks', variables('storagePrivateLinkServices')[copyIndex()].dnsZoneName, format('az{0}{1}', variables('storagePrivateLinkServices')[copyIndex()].dnsLinkPrefix, variables('resourceToken')))]",
+        "[resourceId('Microsoft.Network/privateDnsZones', variables('storagePrivateLinkServices')[copyIndex()].dnsZoneName)]",
+        "[resourceId('Microsoft.Network/privateEndpoints', format('az{0}{1}', variables('storagePrivateLinkServices')[copyIndex()].endpointPrefix, variables('resourceToken')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Web/serverFarms",
+      "apiVersion": "2026-03-01-preview",
+      "name": "[variables('appServicePlanName')]",
+      "location": "[parameters('location')]",
+      "kind": "elastic",
+      "tags": "[variables('baseTags')]",
+      "sku": {
+        "name": "[parameters('logicAppPlanSkuName')]",
+        "tier": "WorkflowStandard",
+        "size": "[parameters('logicAppPlanSkuName')]",
+        "family": "WS",
+        "capacity": "[parameters('logicAppPlanCapacity')]"
+      },
+      "properties": {
+        "reserved": false
+      }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2026-03-01-preview",
+      "name": "[variables('logicAppName')]",
+      "location": "[parameters('location')]",
+      "kind": "functionapp,workflowapp",
+      "tags": "[union(variables('baseTags'), createObject('azd-service-name', 'logicapp'))]",
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[format('{0}', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')))]": {}
+        }
+      },
+      "properties": {
+        "clientAffinityEnabled": false,
+        "enabled": true,
+        "httpsOnly": true,
+        "publicNetworkAccess": "Disabled",
+        "serverFarmId": "[resourceId('Microsoft.Web/serverFarms', variables('appServicePlanName'))]",
+        "virtualNetworkSubnetId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('logicAppIntegrationSubnetName'))]",
+        "siteConfig": {
+          "alwaysOn": true,
+          "cors": {
+            "allowedOrigins": [],
+            "supportCredentials": false
+          },
+          "ftpsState": "Disabled",
+          "http20Enabled": true,
+          "minTlsVersion": "1.2",
+          "use32BitWorkerProcess": false,
+          "vnetRouteAllEnabled": true,
+          "appSettings": [
+            {
+              "name": "APP_KIND",
+              "value": "workflowApp"
+            },
+            {
+              "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+              "value": "[reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02-preview').ConnectionString]"
+            },
+            {
+              "name": "AzureFunctionsJobHost__extensionBundle__id",
+              "value": "Microsoft.Azure.Functions.ExtensionBundle.Workflows"
+            },
+            {
+              "name": "AzureFunctionsJobHost__extensionBundle__version",
+              "value": "[1.*, 2.0.0)"
+            },
+            {
+              "name": "AzureWebJobsStorage",
+              "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};EndpointSuffix={1};AccountKey={2}', variables('storageAccountName'), variables('storageDnsSuffix'), listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), '2025-08-01').keys[0].value)]"
+            },
+            {
+              "name": "FUNCTIONS_EXTENSION_VERSION",
+              "value": "~4"
+            },
+            {
+              "name": "FUNCTIONS_WORKER_RUNTIME",
+              "value": "node"
+            },
+            {
+              "name": "WEBSITE_CONTENTAZUREFILECONNECTIONSTRING",
+              "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};EndpointSuffix={1};AccountKey={2}', variables('storageAccountName'), variables('storageDnsSuffix'), listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), '2025-08-01').keys[0].value)]"
+            },
+            {
+              "name": "WEBSITE_CONTENTOVERVNET",
+              "value": "1"
+            },
+            {
+              "name": "WEBSITE_CONTENTSHARE",
+              "value": "[variables('contentShareName')]"
+            },
+            {
+              "name": "WEBSITE_DNS_SERVER",
+              "value": "168.63.129.16"
+            },
+            {
+              "name": "WEBSITE_NODE_DEFAULT_VERSION",
+              "value": "~20"
+            },
+            {
+              "name": "WEBSITE_VNET_ROUTE_ALL",
+              "value": "1"
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]",
+        "[resourceId('Microsoft.Web/serverFarms', variables('appServicePlanName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts/fileServices/shares', variables('storageAccountName'), 'default', variables('contentShareName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('logicAppIntegrationSubnetName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]",
+        "storagePrivateDnsZoneGroups"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones",
+      "apiVersion": "2024-06-01",
+      "name": "privatelink.azurewebsites.net",
+      "location": "global",
+      "tags": "[variables('baseTags')]"
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+      "apiVersion": "2024-06-01",
+      "name": "[format('{0}/{1}', 'privatelink.azurewebsites.net', variables('logicAppPrivateDnsLinkName'))]",
+      "location": "global",
+      "tags": "[variables('baseTags')]",
+      "properties": {
+        "registrationEnabled": false,
+        "virtualNetwork": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.azurewebsites.net')]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints",
+      "apiVersion": "2025-07-01",
+      "name": "[variables('logicAppPrivateEndpointName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('baseTags')]",
+      "properties": {
+        "subnet": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('privateEndpointSubnetName'))]"
+        },
+        "privateLinkServiceConnections": [
+          {
+            "name": "[variables('logicAppPrivateEndpointConnectionName')]",
+            "properties": {
+              "privateLinkServiceId": "[resourceId('Microsoft.Web/sites', variables('logicAppName'))]",
+              "groupIds": [
+                "sites"
+              ]
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', variables('logicAppName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('privateEndpointSubnetName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "apiVersion": "2025-07-01",
+      "name": "[format('{0}/{1}', variables('logicAppPrivateEndpointName'), variables('logicAppPrivateDnsZoneGroupName'))]",
+      "properties": {
+        "privateDnsZoneConfigs": [
+          {
+            "name": "sites",
+            "properties": {
+              "privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.azurewebsites.net')]"
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones/virtualNetworkLinks', 'privatelink.azurewebsites.net', variables('logicAppPrivateDnsLinkName'))]",
+        "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.azurewebsites.net')]",
+        "[resourceId('Microsoft.Network/privateEndpoints', variables('logicAppPrivateEndpointName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2025-07-01",
+      "name": "[variables('publicIpName')]",
+      "location": "[parameters('location')]",
+      "zones": "[parameters('availabilityZones')]",
+      "tags": "[variables('baseTags')]",
+      "sku": {
+        "name": "Standard",
+        "tier": "Regional"
+      },
+      "properties": {
+        "publicIPAllocationMethod": "Static",
+        "dnsSettings": {
+          "domainNameLabel": "[toLower(variables('applicationGatewayName'))]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies",
+      "apiVersion": "2025-07-01",
+      "name": "[variables('appGatewayWafPolicyName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('baseTags')]",
+      "properties": {
+        "policySettings": {
+          "state": "Enabled",
+          "mode": "Prevention",
+          "requestBodyCheck": true
+        },
+        "managedRules": {
+          "managedRuleSets": [
+            {
+              "ruleSetType": "OWASP",
+              "ruleSetVersion": "3.2"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/applicationGateways",
+      "apiVersion": "2025-09-01",
+      "name": "[variables('applicationGatewayName')]",
+      "location": "[parameters('location')]",
+      "zones": "[parameters('availabilityZones')]",
+      "tags": "[variables('baseTags')]",
+      "properties": {
+        "autoscaleConfiguration": {
+          "minCapacity": "[parameters('appGatewayMinCapacity')]",
+          "maxCapacity": "[parameters('appGatewayMaxCapacity')]"
+        },
+        "firewallPolicy": {
+          "id": "[resourceId('Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies', variables('appGatewayWafPolicyName'))]"
+        },
+        "backendAddressPools": [
+          {
+            "name": "[variables('appGatewayBackendPoolName')]",
+            "properties": {
+              "backendAddresses": [
+                {
+                  "fqdn": "[reference(resourceId('Microsoft.Web/sites', variables('logicAppName')), '2026-03-01-preview').defaultHostName]"
+                }
+              ]
+            }
+          }
+        ],
+        "backendHttpSettingsCollection": [
+          {
+            "name": "[variables('appGatewayBackendSettingsName')]",
+            "properties": {
+              "cookieBasedAffinity": "Disabled",
+              "pickHostNameFromBackendAddress": true,
+              "port": 443,
+              "probe": {
+                "id": "[resourceId('Microsoft.Network/applicationGateways/probes', variables('applicationGatewayName'), variables('appGatewayProbeName'))]"
+              },
+              "protocol": "Https",
+              "requestTimeout": 30
+            }
+          }
+        ],
+        "enableHttp2": true,
+        "frontendIPConfigurations": [
+          {
+            "name": "[variables('appGatewayFrontendIpConfigName')]",
+            "properties": {
+              "publicIPAddress": {
+                "id": "[resourceId('Microsoft.Network/publicIPAddresses', variables('publicIpName'))]"
+              }
+            }
+          }
+        ],
+        "frontendPorts": [
+          {
+            "name": "[variables('appGatewayFrontendPortName')]",
+            "properties": {
+              "port": "[parameters('appGatewayListenerPort')]"
+            }
+          }
+        ],
+        "gatewayIPConfigurations": [
+          {
+            "name": "[format('azgip{0}', variables('resourceToken'))]",
+            "properties": {
+              "subnet": {
+                "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('appGatewaySubnetName'))]"
+              }
+            }
+          }
+        ],
+        "httpListeners": [
+          {
+            "name": "[variables('appGatewayHttpListenerName')]",
+            "properties": {
+              "frontendIPConfiguration": {
+                "id": "[resourceId('Microsoft.Network/applicationGateways/frontendIPConfigurations', variables('applicationGatewayName'), variables('appGatewayFrontendIpConfigName'))]"
+              },
+              "frontendPort": {
+                "id": "[resourceId('Microsoft.Network/applicationGateways/frontendPorts', variables('applicationGatewayName'), variables('appGatewayFrontendPortName'))]"
+              },
+              "protocol": "Http"
+            }
+          }
+        ],
+        "probes": [
+          {
+            "name": "[variables('appGatewayProbeName')]",
+            "properties": {
+              "host": "[reference(resourceId('Microsoft.Web/sites', variables('logicAppName')), '2026-03-01-preview').defaultHostName]",
+              "interval": 30,
+              "match": {
+                "statusCodes": [
+                  "200-499"
+                ]
+              },
+              "path": "/",
+              "protocol": "Https",
+              "timeout": 30,
+              "unhealthyThreshold": 3
+            }
+          }
+        ],
+        "requestRoutingRules": [
+          {
+            "name": "[variables('appGatewayRuleName')]",
+            "properties": {
+              "backendAddressPool": {
+                "id": "[resourceId('Microsoft.Network/applicationGateways/backendAddressPools', variables('applicationGatewayName'), variables('appGatewayBackendPoolName'))]"
+              },
+              "backendHttpSettings": {
+                "id": "[resourceId('Microsoft.Network/applicationGateways/backendHttpSettingsCollection', variables('applicationGatewayName'), variables('appGatewayBackendSettingsName'))]"
+              },
+              "httpListener": {
+                "id": "[resourceId('Microsoft.Network/applicationGateways/httpListeners', variables('applicationGatewayName'), variables('appGatewayHttpListenerName'))]"
+              },
+              "priority": 100,
+              "ruleType": "Basic"
+            }
+          }
+        ],
+        "sku": {
+          "name": "WAF_v2",
+          "tier": "WAF_v2"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('appGatewaySubnetName'))]",
+        "[resourceId('Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies', variables('appGatewayWafPolicyName'))]",
+        "[resourceId('Microsoft.Web/sites', variables('logicAppName'))]",
+        "[resourceId('Microsoft.Network/privateEndpoints/privateDnsZoneGroups', variables('logicAppPrivateEndpointName'), variables('logicAppPrivateDnsZoneGroupName'))]",
+        "[resourceId('Microsoft.Network/publicIPAddresses', variables('publicIpName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Insights/diagnosticSettings",
+      "apiVersion": "2021-05-01-preview",
+      "scope": "[resourceId('Microsoft.Web/sites', variables('logicAppName'))]",
+      "name": "[format('azdsl{0}', variables('resourceToken'))]",
+      "properties": {
+        "workspaceId": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName'))]",
+        "logs": [
+          {
+            "categoryGroup": "allLogs",
+            "enabled": true
+          }
+        ],
+        "metrics": [
+          {
+            "category": "AllMetrics",
+            "enabled": true
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName'))]",
+        "[resourceId('Microsoft.Web/sites', variables('logicAppName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Insights/diagnosticSettings",
+      "apiVersion": "2021-05-01-preview",
+      "scope": "[resourceId('Microsoft.Network/applicationGateways', variables('applicationGatewayName'))]",
+      "name": "[format('azdsa{0}', variables('resourceToken'))]",
+      "properties": {
+        "workspaceId": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName'))]",
+        "logs": [
+          {
+            "categoryGroup": "allLogs",
+            "enabled": true
+          }
+        ],
+        "metrics": [
+          {
+            "category": "AllMetrics",
+            "enabled": true
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/applicationGateways', variables('applicationGatewayName'))]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Insights/diagnosticSettings",
+      "apiVersion": "2021-05-01-preview",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts/blobServices', variables('storageAccountName'), 'default')]",
+      "name": "[format('azdsb{0}', variables('resourceToken'))]",
+      "properties": {
+        "workspaceId": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName'))]",
+        "logs": [
+          {
+            "categoryGroup": "allLogs",
+            "enabled": true
+          }
+        ],
+        "metrics": [
+          {
+            "category": "Transaction",
+            "enabled": true
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices', variables('storageAccountName'), 'default')]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Insights/diagnosticSettings",
+      "apiVersion": "2021-05-01-preview",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts/fileServices', variables('storageAccountName'), 'default')]",
+      "name": "[format('azdsf{0}', variables('resourceToken'))]",
+      "properties": {
+        "workspaceId": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName'))]",
+        "logs": [
+          {
+            "categoryGroup": "allLogs",
+            "enabled": true
+          }
+        ],
+        "metrics": [
+          {
+            "category": "Transaction",
+            "enabled": true
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/fileServices', variables('storageAccountName'), 'default')]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "APPLICATION_GATEWAY_FQDN": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Network/publicIPAddresses', variables('publicIpName')), '2025-07-01').dnsSettings.fqdn]"
+    },
+    "APPLICATION_GATEWAY_PUBLIC_IP": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Network/publicIPAddresses', variables('publicIpName')), '2025-07-01').ipAddress]"
+    },
+    "LOGIC_APP_DEFAULT_HOSTNAME": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Web/sites', variables('logicAppName')), '2026-03-01-preview').defaultHostName]"
+    },
+    "LOGIC_APP_NAME": {
+      "type": "string",
+      "value": "[variables('logicAppName')]"
+    },
+    "STORAGE_ACCOUNT_NAME": {
+      "type": "string",
+      "value": "[variables('storageAccountName')]"
+    }
+  }
+}

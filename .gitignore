@@ -1,0 +1,6 @@
+.azure/
+.vscode/
+bin/
+obj/
+*.zip
+*.log
