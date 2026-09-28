@@ -4,8 +4,8 @@
   "metadata": {
     "_generator": {
       "name": "bicep",
-      "version": "0.41.2.15936",
-      "templateHash": "4676964669320608723"
+      "version": "0.47.16.16243",
+      "templateHash": "5715875243829731369"
     }
   },
   "parameters": {
@@ -20,6 +20,58 @@
       "defaultValue": "[resourceGroup().location]",
       "metadata": {
         "description": "Azure region for all regional resources."
+      }
+    },
+    "dcAdminUsername": {
+      "type": "string"
+    },
+    "dcAdminPassword": {
+      "type": "securestring"
+    },
+    "dsrmPassword": {
+      "type": "securestring"
+    },
+    "adDomainName": {
+      "type": "string",
+      "defaultValue": "ad.demo.test"
+    },
+    "adNetbiosName": {
+      "type": "string",
+      "defaultValue": "DEMO"
+    },
+    "sqlAdminObjectId": {
+      "type": "string",
+      "minLength": 36,
+      "maxLength": 36,
+      "metadata": {
+        "description": "Object ID of the Microsoft Entra group or user administering SQL. Never use the web app identity."
+      }
+    },
+    "sqlAdminLogin": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Display name of the SQL Microsoft Entra administrator."
+      }
+    },
+    "sqlAdminPrincipalType": {
+      "type": "string",
+      "defaultValue": "Group",
+      "allowedValues": [
+        "Group",
+        "User"
+      ]
+    },
+    "webAppPlanSkuName": {
+      "type": "string",
+      "defaultValue": "S1",
+      "allowedValues": [
+        "S1",
+        "S2",
+        "S3"
+      ],
+      "metadata": {
+        "description": "Windows App Service Standard SKU, separate from the Logic App Workflow Standard plan."
       }
     },
     "vnetAddressPrefix": {
@@ -48,6 +100,13 @@
       "defaultValue": "10.42.2.0/24",
       "metadata": {
         "description": "Subnet prefix delegated for Logic App outbound virtual network integration."
+      }
+    },
+    "webAppIntegrationSubnetPrefix": {
+      "type": "string",
+      "defaultValue": "10.42.5.0/24",
+      "metadata": {
+        "description": "Dedicated subnet for Windows web app outbound VNet integration."
       }
     },
     "logicAppPlanSkuName": {
@@ -103,7 +162,7 @@
       "type": "int",
       "defaultValue": 80,
       "metadata": {
-        "description": "Application Gateway listener port. The backend connection to the Logic App uses HTTPS."
+        "description": "Application Gateway HTTP origin port, reachable only from Front Door. The backend connection to the Windows web app uses HTTPS."
       }
     },
     "availabilityZones": {
@@ -149,6 +208,13 @@
     "vnetName": "[format('azvnt{0}', variables('resourceToken'))]",
     "appGatewayNsgName": "[format('aznsg{0}', variables('resourceToken'))]",
     "appGatewayWafPolicyName": "[format('azwaf{0}', variables('resourceToken'))]",
+    "frontDoorName": "[format('azafd{0}', variables('resourceToken'))]",
+    "frontDoorEndpointName": "[format('azfde{0}', variables('resourceToken'))]",
+    "webAppName": "[format('azweb{0}', variables('resourceToken'))]",
+    "webAppIdentityName": "[format('azwid{0}', variables('resourceToken'))]",
+    "webAppIntegrationSubnetName": "[format('azwint{0}', variables('resourceToken'))]",
+    "sqlServerName": "[format('azsql{0}', variables('resourceToken'))]",
+    "sqlDatabaseName": "appdb",
     "storageDnsSuffix": "[environment().suffixes.storage]",
     "storagePrivateLinkServices": [
       {
@@ -226,6 +292,13 @@
       "tags": "[variables('baseTags')]"
     },
     {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2024-11-30",
+      "name": "[variables('webAppIdentityName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('baseTags')]"
+    },
+    {
       "type": "Microsoft.Network/networkSecurityGroups",
       "apiVersion": "2025-07-01",
       "name": "[variables('appGatewayNsgName')]",
@@ -234,7 +307,7 @@
       "properties": {
         "securityRules": [
           {
-            "name": "Allow-Http-From-Internet",
+            "name": "Allow-Http-From-FrontDoor",
             "properties": {
               "priority": 100,
               "direction": "Inbound",
@@ -242,7 +315,7 @@
               "protocol": "Tcp",
               "sourcePortRange": "*",
               "destinationPortRange": "[string(parameters('appGatewayListenerPort'))]",
-              "sourceAddressPrefix": "Internet",
+              "sourceAddressPrefix": "AzureFrontDoor.Backend",
               "destinationAddressPrefix": "*"
             }
           },
@@ -271,9 +344,77 @@
               "sourceAddressPrefix": "AzureLoadBalancer",
               "destinationAddressPrefix": "*"
             }
+          },
+          {
+            "name": "Deny-Other-Inbound",
+            "properties": {
+              "priority": 130,
+              "direction": "Inbound",
+              "access": "Deny",
+              "protocol": "*",
+              "sourcePortRange": "*",
+              "destinationPortRange": "*",
+              "sourceAddressPrefix": "*",
+              "destinationAddressPrefix": "*"
+            }
           }
         ]
       }
+    },
+    {
+      "type": "Microsoft.Network/applicationSecurityGroups",
+      "apiVersion": "2025-07-01",
+      "name": "[format('azwasg{0}', variables('resourceToken'))]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('baseTags')]"
+    },
+    {
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "apiVersion": "2025-07-01",
+      "name": "[format('azpensg{0}', variables('resourceToken'))]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('baseTags')]",
+      "properties": {
+        "securityRules": [
+          {
+            "name": "Allow-WebApp-Https-From-AppGateway",
+            "properties": {
+              "priority": 100,
+              "direction": "Inbound",
+              "access": "Allow",
+              "protocol": "Tcp",
+              "sourcePortRange": "*",
+              "destinationPortRange": "443",
+              "sourceAddressPrefix": "[parameters('appGatewaySubnetPrefix')]",
+              "destinationApplicationSecurityGroups": [
+                {
+                  "id": "[resourceId('Microsoft.Network/applicationSecurityGroups', format('azwasg{0}', variables('resourceToken')))]"
+                }
+              ]
+            }
+          },
+          {
+            "name": "Deny-Other-WebApp-Inbound",
+            "properties": {
+              "priority": 110,
+              "direction": "Inbound",
+              "access": "Deny",
+              "protocol": "*",
+              "sourcePortRange": "*",
+              "destinationPortRange": "*",
+              "sourceAddressPrefix": "*",
+              "destinationApplicationSecurityGroups": [
+                {
+                  "id": "[resourceId('Microsoft.Network/applicationSecurityGroups', format('azwasg{0}', variables('resourceToken')))]"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/applicationSecurityGroups', format('azwasg{0}', variables('resourceToken')))]"
+      ]
     },
     {
       "type": "Microsoft.Network/virtualNetworks",
@@ -310,9 +451,14 @@
       "name": "[format('{0}/{1}', variables('vnetName'), variables('privateEndpointSubnetName'))]",
       "properties": {
         "addressPrefix": "[parameters('privateEndpointSubnetPrefix')]",
-        "privateEndpointNetworkPolicies": "Disabled"
+        "privateEndpointNetworkPolicies": "NetworkSecurityGroupEnabled",
+        "networkSecurityGroup": {
+          "id": "[resourceId('Microsoft.Network/networkSecurityGroups', format('azpensg{0}', variables('resourceToken')))]"
+        }
       },
       "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('appGatewaySubnetName'))]",
+        "[resourceId('Microsoft.Network/networkSecurityGroups', format('azpensg{0}', variables('resourceToken')))]",
         "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
       ]
     },
@@ -332,6 +478,27 @@
         ]
       },
       "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('privateEndpointSubnetName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/virtualNetworks/subnets",
+      "apiVersion": "2025-07-01",
+      "name": "[format('{0}/{1}', variables('vnetName'), variables('webAppIntegrationSubnetName'))]",
+      "properties": {
+        "addressPrefix": "[parameters('webAppIntegrationSubnetPrefix')]",
+        "delegations": [
+          {
+            "name": "[format('azdlw{0}', variables('resourceToken'))]",
+            "properties": {
+              "serviceName": "Microsoft.Web/serverFarms"
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('logicAppIntegrationSubnetName'))]",
         "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
       ]
     },
@@ -479,6 +646,7 @@
         ]
       },
       "dependsOn": [
+        "[resourceId('Microsoft.Resources/deployments', 'domain-controller-network')]",
         "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('privateEndpointSubnetName'))]",
         "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
       ]
@@ -615,6 +783,7 @@
       "dependsOn": [
         "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]",
         "[resourceId('Microsoft.Web/serverFarms', variables('appServicePlanName'))]",
+        "[resourceId('Microsoft.Resources/deployments', 'domain-controller-network')]",
         "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))]",
         "[resourceId('Microsoft.Storage/storageAccounts/fileServices/shares', variables('storageAccountName'), 'default', variables('contentShareName'))]",
         "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('logicAppIntegrationSubnetName'))]",
@@ -669,6 +838,7 @@
         ]
       },
       "dependsOn": [
+        "[resourceId('Microsoft.Resources/deployments', 'domain-controller-network')]",
         "[resourceId('Microsoft.Web/sites', variables('logicAppName'))]",
         "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('privateEndpointSubnetName'))]"
       ]
@@ -694,6 +864,251 @@
       ]
     },
     {
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2024-11-01",
+      "name": "[format('azwsp{0}', variables('resourceToken'))]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('baseTags')]",
+      "kind": "app",
+      "sku": {
+        "name": "[parameters('webAppPlanSkuName')]",
+        "tier": "Standard",
+        "capacity": 1
+      },
+      "properties": {
+        "reserved": false
+      }
+    },
+    {
+      "type": "Microsoft.Sql/servers",
+      "apiVersion": "2023-08-01",
+      "name": "[variables('sqlServerName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('baseTags')]",
+      "properties": {
+        "version": "12.0",
+        "minimalTlsVersion": "1.2",
+        "publicNetworkAccess": "Disabled",
+        "administrators": {
+          "administratorType": "ActiveDirectory",
+          "azureADOnlyAuthentication": true,
+          "login": "[parameters('sqlAdminLogin')]",
+          "sid": "[parameters('sqlAdminObjectId')]",
+          "tenantId": "[tenant().tenantId]",
+          "principalType": "[parameters('sqlAdminPrincipalType')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Sql/servers/databases",
+      "apiVersion": "2023-08-01",
+      "name": "[format('{0}/{1}', variables('sqlServerName'), variables('sqlDatabaseName'))]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('baseTags')]",
+      "sku": {
+        "name": "Basic",
+        "tier": "Basic",
+        "capacity": 5
+      },
+      "properties": {
+        "maxSizeBytes": 2147483648,
+        "requestedBackupStorageRedundancy": "Local"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones",
+      "apiVersion": "2024-06-01",
+      "name": "[format('privatelink{0}', environment().suffixes.sqlServerHostname)]",
+      "location": "global",
+      "tags": "[variables('baseTags')]"
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+      "apiVersion": "2024-06-01",
+      "name": "[format('{0}/{1}', format('privatelink{0}', environment().suffixes.sqlServerHostname), format('azvsql{0}', variables('resourceToken')))]",
+      "location": "global",
+      "tags": "[variables('baseTags')]",
+      "properties": {
+        "registrationEnabled": false,
+        "virtualNetwork": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink{0}', environment().suffixes.sqlServerHostname))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints",
+      "apiVersion": "2025-07-01",
+      "name": "[format('azpesql{0}', variables('resourceToken'))]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('baseTags')]",
+      "properties": {
+        "subnet": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('privateEndpointSubnetName'))]"
+        },
+        "privateLinkServiceConnections": [
+          {
+            "name": "[format('azscsql{0}', variables('resourceToken'))]",
+            "properties": {
+              "privateLinkServiceId": "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]",
+              "groupIds": [
+                "sqlServer"
+              ]
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Resources/deployments', 'domain-controller-network')]",
+        "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('privateEndpointSubnetName'))]",
+        "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "apiVersion": "2025-07-01",
+      "name": "[format('{0}/{1}', format('azpesql{0}', variables('resourceToken')), format('azdgsql{0}', variables('resourceToken')))]",
+      "properties": {
+        "privateDnsZoneConfigs": [
+          {
+            "name": "sql",
+            "properties": {
+              "privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink{0}', environment().suffixes.sqlServerHostname))]"
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones/virtualNetworkLinks', format('privatelink{0}', environment().suffixes.sqlServerHostname), format('azvsql{0}', variables('resourceToken')))]",
+        "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink{0}', environment().suffixes.sqlServerHostname))]",
+        "[resourceId('Microsoft.Network/privateEndpoints', format('azpesql{0}', variables('resourceToken')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2024-11-01",
+      "name": "[variables('webAppName')]",
+      "location": "[parameters('location')]",
+      "kind": "app",
+      "tags": "[union(variables('baseTags'), createObject('azd-service-name', 'webapp'))]",
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[format('{0}', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('webAppIdentityName')))]": {}
+        }
+      },
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', format('azwsp{0}', variables('resourceToken')))]",
+        "httpsOnly": true,
+        "publicNetworkAccess": "Disabled",
+        "clientAffinityEnabled": false,
+        "virtualNetworkSubnetId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('webAppIntegrationSubnetName'))]",
+        "siteConfig": {
+          "alwaysOn": true,
+          "ftpsState": "Disabled",
+          "minTlsVersion": "1.2",
+          "scmMinTlsVersion": "1.2",
+          "http20Enabled": true,
+          "use32BitWorkerProcess": false,
+          "appSettings": [
+            {
+              "name": "AZURE_CLIENT_ID",
+              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('webAppIdentityName')), '2024-11-30').clientId]"
+            },
+            {
+              "name": "SQL_SERVER_FQDN",
+              "value": "[reference(resourceId('Microsoft.Sql/servers', variables('sqlServerName')), '2023-08-01').fullyQualifiedDomainName]"
+            },
+            {
+              "name": "SQL_DATABASE_NAME",
+              "value": "[variables('sqlDatabaseName')]"
+            }
+          ],
+          "connectionStrings": [
+            {
+              "name": "AzureSqlDatabaseMicrosoftDataSqlClient",
+              "type": "SQLAzure",
+              "connectionString": "[format('Server=tcp:{0},1433;Database={1};Authentication=Active Directory Managed Identity;User Id={2};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;', reference(resourceId('Microsoft.Sql/servers', variables('sqlServerName')), '2023-08-01').fullyQualifiedDomainName, variables('sqlDatabaseName'), reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('webAppIdentityName')), '2024-11-30').clientId)]"
+            },
+            {
+              "name": "AzureSqlDatabaseSystemDataSqlClient",
+              "type": "SQLAzure",
+              "connectionString": "[format('Server=tcp:{0},1433;Database={1};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;', reference(resourceId('Microsoft.Sql/servers', variables('sqlServerName')), '2023-08-01').fullyQualifiedDomainName, variables('sqlDatabaseName'))]"
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Resources/deployments', 'domain-controller-network')]",
+        "[resourceId('Microsoft.Sql/servers/databases', variables('sqlServerName'), variables('sqlDatabaseName'))]",
+        "[resourceId('Microsoft.Network/privateEndpoints/privateDnsZoneGroups', format('azpesql{0}', variables('resourceToken')), format('azdgsql{0}', variables('resourceToken')))]",
+        "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('webAppIdentityName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('webAppIntegrationSubnetName'))]",
+        "[resourceId('Microsoft.Web/serverfarms', format('azwsp{0}', variables('resourceToken')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints",
+      "apiVersion": "2025-07-01",
+      "name": "[format('azpew{0}', variables('resourceToken'))]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('baseTags')]",
+      "properties": {
+        "subnet": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('privateEndpointSubnetName'))]"
+        },
+        "applicationSecurityGroups": [
+          {
+            "id": "[resourceId('Microsoft.Network/applicationSecurityGroups', format('azwasg{0}', variables('resourceToken')))]"
+          }
+        ],
+        "privateLinkServiceConnections": [
+          {
+            "name": "[format('azscw{0}', variables('resourceToken'))]",
+            "properties": {
+              "privateLinkServiceId": "[resourceId('Microsoft.Web/sites', variables('webAppName'))]",
+              "groupIds": [
+                "sites"
+              ]
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Resources/deployments', 'domain-controller-network')]",
+        "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('privateEndpointSubnetName'))]",
+        "[resourceId('Microsoft.Web/sites', variables('webAppName'))]",
+        "[resourceId('Microsoft.Network/applicationSecurityGroups', format('azwasg{0}', variables('resourceToken')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "apiVersion": "2025-07-01",
+      "name": "[format('{0}/{1}', format('azpew{0}', variables('resourceToken')), format('azdgw{0}', variables('resourceToken')))]",
+      "properties": {
+        "privateDnsZoneConfigs": [
+          {
+            "name": "sites",
+            "properties": {
+              "privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.azurewebsites.net')]"
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones/virtualNetworkLinks', 'privatelink.azurewebsites.net', variables('logicAppPrivateDnsLinkName'))]",
+        "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.azurewebsites.net')]",
+        "[resourceId('Microsoft.Network/privateEndpoints', format('azpew{0}', variables('resourceToken')))]"
+      ]
+    },
+    {
       "type": "Microsoft.Network/publicIPAddresses",
       "apiVersion": "2025-07-01",
       "name": "[variables('publicIpName')]",
@@ -712,6 +1127,95 @@
       }
     },
     {
+      "type": "Microsoft.Cdn/profiles",
+      "apiVersion": "2025-04-15",
+      "name": "[variables('frontDoorName')]",
+      "location": "global",
+      "tags": "[variables('baseTags')]",
+      "sku": {
+        "name": "Standard_AzureFrontDoor"
+      },
+      "properties": {
+        "originResponseTimeoutSeconds": 30
+      }
+    },
+    {
+      "type": "Microsoft.Cdn/profiles/afdEndpoints",
+      "apiVersion": "2025-04-15",
+      "name": "[format('{0}/{1}', variables('frontDoorName'), variables('frontDoorEndpointName'))]",
+      "location": "global",
+      "tags": "[variables('baseTags')]",
+      "properties": {
+        "enabledState": "Enabled"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Cdn/profiles', variables('frontDoorName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Cdn/profiles/originGroups",
+      "apiVersion": "2025-04-15",
+      "name": "[format('{0}/{1}', variables('frontDoorName'), 'app-gateway')]",
+      "properties": {
+        "sessionAffinityState": "Disabled",
+        "loadBalancingSettings": {
+          "sampleSize": 4,
+          "successfulSamplesRequired": 3,
+          "additionalLatencyInMilliseconds": 50
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Cdn/profiles', variables('frontDoorName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Cdn/profiles/originGroups/origins",
+      "apiVersion": "2025-04-15",
+      "name": "[format('{0}/{1}/{2}', variables('frontDoorName'), 'app-gateway', 'app-gateway')]",
+      "properties": {
+        "hostName": "[reference(resourceId('Microsoft.Network/publicIPAddresses', variables('publicIpName')), '2025-07-01').dnsSettings.fqdn]",
+        "originHostHeader": "[reference(resourceId('Microsoft.Cdn/profiles/afdEndpoints', variables('frontDoorName'), variables('frontDoorEndpointName')), '2025-04-15').hostName]",
+        "httpPort": "[parameters('appGatewayListenerPort')]",
+        "httpsPort": 443,
+        "enabledState": "Enabled",
+        "enforceCertificateNameCheck": true,
+        "priority": 1,
+        "weight": 1000
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/applicationGateways', variables('applicationGatewayName'))]",
+        "[resourceId('Microsoft.Cdn/profiles/afdEndpoints', variables('frontDoorName'), variables('frontDoorEndpointName'))]",
+        "[resourceId('Microsoft.Cdn/profiles/originGroups', variables('frontDoorName'), 'app-gateway')]",
+        "[resourceId('Microsoft.Network/publicIPAddresses', variables('publicIpName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Cdn/profiles/afdEndpoints/routes",
+      "apiVersion": "2025-04-15",
+      "name": "[format('{0}/{1}/{2}', variables('frontDoorName'), variables('frontDoorEndpointName'), 'web-app')]",
+      "properties": {
+        "originGroup": {
+          "id": "[resourceId('Microsoft.Cdn/profiles/originGroups', variables('frontDoorName'), 'app-gateway')]"
+        },
+        "supportedProtocols": [
+          "Http",
+          "Https"
+        ],
+        "patternsToMatch": [
+          "/*"
+        ],
+        "forwardingProtocol": "HttpOnly",
+        "httpsRedirect": "Enabled",
+        "linkToDefaultDomain": "Enabled",
+        "enabledState": "Enabled"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Cdn/profiles/afdEndpoints', variables('frontDoorName'), variables('frontDoorEndpointName'))]",
+        "[resourceId('Microsoft.Cdn/profiles/originGroups/origins', variables('frontDoorName'), 'app-gateway', 'app-gateway')]",
+        "[resourceId('Microsoft.Cdn/profiles/originGroups', variables('frontDoorName'), 'app-gateway')]"
+      ]
+    },
+    {
       "type": "Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies",
       "apiVersion": "2025-07-01",
       "name": "[variables('appGatewayWafPolicyName')]",
@@ -723,6 +1227,53 @@
           "mode": "Prevention",
           "requestBodyCheck": true
         },
+        "customRules": [
+          {
+            "name": "BlockMissingFrontDoorId",
+            "priority": 1,
+            "ruleType": "MatchRule",
+            "action": "Block",
+            "state": "Enabled",
+            "matchConditions": [
+              {
+                "matchVariables": [
+                  {
+                    "variableName": "RequestHeaders",
+                    "selector": "X-Azure-FDID"
+                  }
+                ],
+                "operator": "Any",
+                "negationConditon": true,
+                "matchValues": []
+              }
+            ]
+          },
+          {
+            "name": "BlockOtherFrontDoorIds",
+            "priority": 2,
+            "ruleType": "MatchRule",
+            "action": "Block",
+            "state": "Enabled",
+            "matchConditions": [
+              {
+                "matchVariables": [
+                  {
+                    "variableName": "RequestHeaders",
+                    "selector": "X-Azure-FDID"
+                  }
+                ],
+                "operator": "Equal",
+                "negationConditon": true,
+                "matchValues": [
+                  "[toLower(reference(resourceId('Microsoft.Cdn/profiles', variables('frontDoorName')), '2025-04-15').frontDoorId)]"
+                ],
+                "transforms": [
+                  "Lowercase"
+                ]
+              }
+            ]
+          }
+        ],
         "managedRules": {
           "managedRuleSets": [
             {
@@ -731,11 +1282,14 @@
             }
           ]
         }
-      }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Cdn/profiles', variables('frontDoorName'))]"
+      ]
     },
     {
       "type": "Microsoft.Network/applicationGateways",
-      "apiVersion": "2025-09-01",
+      "apiVersion": "2025-07-01",
       "name": "[variables('applicationGatewayName')]",
       "location": "[parameters('location')]",
       "zones": "[parameters('availabilityZones')]",
@@ -754,7 +1308,7 @@
             "properties": {
               "backendAddresses": [
                 {
-                  "fqdn": "[reference(resourceId('Microsoft.Web/sites', variables('logicAppName')), '2026-03-01-preview').defaultHostName]"
+                  "fqdn": "[reference(resourceId('Microsoft.Web/sites', variables('webAppName')), '2024-11-01').defaultHostName]"
                 }
               ]
             }
@@ -822,11 +1376,12 @@
           {
             "name": "[variables('appGatewayProbeName')]",
             "properties": {
-              "host": "[reference(resourceId('Microsoft.Web/sites', variables('logicAppName')), '2026-03-01-preview').defaultHostName]",
+              "host": "[reference(resourceId('Microsoft.Web/sites', variables('webAppName')), '2024-11-01').defaultHostName]",
               "interval": 30,
               "match": {
                 "statusCodes": [
-                  "200-499"
+                  "200-399",
+                  "401"
                 ]
               },
               "path": "/",
@@ -862,9 +1417,64 @@
       "dependsOn": [
         "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('appGatewaySubnetName'))]",
         "[resourceId('Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies', variables('appGatewayWafPolicyName'))]",
-        "[resourceId('Microsoft.Web/sites', variables('logicAppName'))]",
-        "[resourceId('Microsoft.Network/privateEndpoints/privateDnsZoneGroups', variables('logicAppPrivateEndpointName'), variables('logicAppPrivateDnsZoneGroupName'))]",
-        "[resourceId('Microsoft.Network/publicIPAddresses', variables('publicIpName'))]"
+        "[resourceId('Microsoft.Resources/deployments', 'domain-controller-network')]",
+        "[resourceId('Microsoft.Network/publicIPAddresses', variables('publicIpName'))]",
+        "[resourceId('Microsoft.Web/sites', variables('webAppName'))]",
+        "[resourceId('Microsoft.Network/privateEndpoints/privateDnsZoneGroups', format('azpew{0}', variables('resourceToken')), format('azdgw{0}', variables('resourceToken')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Insights/diagnosticSettings",
+      "apiVersion": "2021-05-01-preview",
+      "scope": "[resourceId('Microsoft.Cdn/profiles', variables('frontDoorName'))]",
+      "name": "[format('azdsfd{0}', variables('resourceToken'))]",
+      "properties": {
+        "workspaceId": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName'))]",
+        "logs": [
+          {
+            "category": "FrontDoorAccessLog",
+            "enabled": true
+          },
+          {
+            "category": "FrontDoorHealthProbeLog",
+            "enabled": true
+          }
+        ],
+        "metrics": [
+          {
+            "category": "AllMetrics",
+            "enabled": true
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Cdn/profiles', variables('frontDoorName'))]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Insights/diagnosticSettings",
+      "apiVersion": "2021-05-01-preview",
+      "scope": "[resourceId('Microsoft.Web/sites', variables('webAppName'))]",
+      "name": "[format('azdsw{0}', variables('resourceToken'))]",
+      "properties": {
+        "workspaceId": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName'))]",
+        "logs": [
+          {
+            "categoryGroup": "allLogs",
+            "enabled": true
+          }
+        ],
+        "metrics": [
+          {
+            "category": "AllMetrics",
+            "enabled": true
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName'))]",
+        "[resourceId('Microsoft.Web/sites', variables('webAppName'))]"
       ]
     },
     {
@@ -966,9 +1576,483 @@
         "[resourceId('Microsoft.Storage/storageAccounts/fileServices', variables('storageAccountName'), 'default')]",
         "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName'))]"
       ]
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "domain-controller-network",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "resourceToken": {
+            "value": "[variables('resourceToken')]"
+          },
+          "tags": {
+            "value": "[variables('baseTags')]"
+          },
+          "vnetName": {
+            "value": "[variables('vnetName')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.47.16.16243",
+              "templateHash": "16059612704371581919"
+            }
+          },
+          "parameters": {
+            "location": {
+              "type": "string"
+            },
+            "resourceToken": {
+              "type": "string"
+            },
+            "tags": {
+              "type": "object"
+            },
+            "vnetName": {
+              "type": "string"
+            },
+            "subnetPrefix": {
+              "type": "string",
+              "defaultValue": "10.42.3.0/24"
+            },
+            "privateIpAddress": {
+              "type": "string",
+              "defaultValue": "10.42.3.4"
+            },
+            "bastionSubnetPrefix": {
+              "type": "string",
+              "defaultValue": "10.42.4.0/26"
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Network/networkSecurityGroups",
+              "apiVersion": "2025-07-01",
+              "name": "[format('azdcns{0}', parameters('resourceToken'))]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "properties": {
+                "securityRules": [
+                  {
+                    "name": "Allow-Rdp-From-Bastion",
+                    "properties": {
+                      "priority": 100,
+                      "direction": "Inbound",
+                      "access": "Allow",
+                      "protocol": "Tcp",
+                      "sourcePortRange": "*",
+                      "destinationPortRange": "3389",
+                      "sourceAddressPrefix": "[parameters('bastionSubnetPrefix')]",
+                      "destinationAddressPrefix": "[parameters('privateIpAddress')]"
+                    }
+                  },
+                  {
+                    "name": "Deny-Other-Inbound",
+                    "properties": {
+                      "priority": 1000,
+                      "direction": "Inbound",
+                      "access": "Deny",
+                      "protocol": "*",
+                      "sourcePortRange": "*",
+                      "destinationPortRange": "*",
+                      "sourceAddressPrefix": "*",
+                      "destinationAddressPrefix": "*"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "type": "Microsoft.Network/publicIPAddresses",
+              "apiVersion": "2025-07-01",
+              "name": "[format('azdcnatip{0}', parameters('resourceToken'))]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "sku": {
+                "name": "Standard"
+              },
+              "properties": {
+                "publicIPAllocationMethod": "Static"
+              }
+            },
+            {
+              "type": "Microsoft.Network/natGateways",
+              "apiVersion": "2025-07-01",
+              "name": "[format('azdcnat{0}', parameters('resourceToken'))]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "sku": {
+                "name": "Standard"
+              },
+              "properties": {
+                "publicIpAddresses": [
+                  {
+                    "id": "[resourceId('Microsoft.Network/publicIPAddresses', format('azdcnatip{0}', parameters('resourceToken')))]"
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/publicIPAddresses', format('azdcnatip{0}', parameters('resourceToken')))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Network/virtualNetworks/subnets",
+              "apiVersion": "2025-07-01",
+              "name": "[format('{0}/{1}', parameters('vnetName'), 'DomainControllerSubnet')]",
+              "properties": {
+                "addressPrefix": "[parameters('subnetPrefix')]",
+                "defaultOutboundAccess": false,
+                "networkSecurityGroup": {
+                  "id": "[resourceId('Microsoft.Network/networkSecurityGroups', format('azdcns{0}', parameters('resourceToken')))]"
+                },
+                "natGateway": {
+                  "id": "[resourceId('Microsoft.Network/natGateways', format('azdcnat{0}', parameters('resourceToken')))]"
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/natGateways', format('azdcnat{0}', parameters('resourceToken')))]",
+                "[resourceId('Microsoft.Network/networkSecurityGroups', format('azdcns{0}', parameters('resourceToken')))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Network/virtualNetworks/subnets",
+              "apiVersion": "2025-07-01",
+              "name": "[format('{0}/{1}', parameters('vnetName'), 'AzureBastionSubnet')]",
+              "properties": {
+                "addressPrefix": "[parameters('bastionSubnetPrefix')]",
+                "defaultOutboundAccess": false
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('vnetName'), 'DomainControllerSubnet')]"
+              ]
+            }
+          ],
+          "outputs": {
+            "dcSubnetId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('vnetName'), 'DomainControllerSubnet')]"
+            },
+            "bastionSubnetId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('vnetName'), 'AzureBastionSubnet')]"
+            },
+            "privateIp": {
+              "type": "string",
+              "value": "[parameters('privateIpAddress')]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('webAppIntegrationSubnetName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "domain-controller",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "resourceToken": {
+            "value": "[variables('resourceToken')]"
+          },
+          "tags": {
+            "value": "[variables('baseTags')]"
+          },
+          "dcSubnetId": {
+            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'domain-controller-network'), '2025-04-01').outputs.dcSubnetId.value]"
+          },
+          "bastionSubnetId": {
+            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'domain-controller-network'), '2025-04-01').outputs.bastionSubnetId.value]"
+          },
+          "privateIpAddress": {
+            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'domain-controller-network'), '2025-04-01').outputs.privateIp.value]"
+          },
+          "adminUsername": {
+            "value": "[parameters('dcAdminUsername')]"
+          },
+          "adminPassword": {
+            "value": "[parameters('dcAdminPassword')]"
+          },
+          "dsrmPassword": {
+            "value": "[parameters('dsrmPassword')]"
+          },
+          "domainName": {
+            "value": "[parameters('adDomainName')]"
+          },
+          "netbiosName": {
+            "value": "[parameters('adNetbiosName')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.47.16.16243",
+              "templateHash": "6244921753258870247"
+            }
+          },
+          "parameters": {
+            "location": {
+              "type": "string"
+            },
+            "resourceToken": {
+              "type": "string"
+            },
+            "tags": {
+              "type": "object"
+            },
+            "dcSubnetId": {
+              "type": "string"
+            },
+            "bastionSubnetId": {
+              "type": "string"
+            },
+            "privateIpAddress": {
+              "type": "string"
+            },
+            "adminUsername": {
+              "type": "string"
+            },
+            "adminPassword": {
+              "type": "securestring"
+            },
+            "dsrmPassword": {
+              "type": "securestring"
+            },
+            "domainName": {
+              "type": "string",
+              "defaultValue": "ad.demo.test"
+            },
+            "netbiosName": {
+              "type": "string",
+              "defaultValue": "DEMO"
+            },
+            "vmSize": {
+              "type": "string",
+              "defaultValue": "Standard_D2s_v5"
+            }
+          },
+          "variables": {
+            "$fxv#0": "#Requires -Version 5.1\r\n#Requires -RunAsAdministrator\r\n[CmdletBinding()]\r\nparam(\r\n    [Parameter(Mandatory)]\r\n    [string] $ConfigurationBase64\r\n)\r\n\r\n$ErrorActionPreference = 'Stop'\r\nSet-StrictMode -Version Latest\r\n\r\n$configuration = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($ConfigurationBase64)) | ConvertFrom-Json\r\n$domainName = [string] $configuration.domainName\r\n$netbiosName = [string] $configuration.netbiosName\r\nif ($domainName -notmatch '^(?=.{1,253}$)([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\\.)+[a-zA-Z]{2,63}$') {\r\n    throw 'domainName must be a valid multi-label DNS name.'\r\n}\r\nif ($netbiosName -notmatch '^[a-zA-Z][a-zA-Z0-9-]{0,14}$') {\r\n    throw 'netbiosName must start with a letter and contain at most 15 letters, digits or hyphens.'\r\n}\r\n\r\n$computer = Get-CimInstance Win32_ComputerSystem\r\nif ($computer.DomainRole -ge 4) {\r\n    if ($computer.Domain -ine $domainName) {\r\n        throw \"This VM is already a domain controller for $($computer.Domain), not $domainName.\"\r\n    }\r\n    Write-Output \"Domain controller for $domainName already exists; no changes made.\"\r\n    return\r\n}\r\nif ($computer.PartOfDomain) {\r\n    throw 'Refusing to create a new forest on a domain-joined server.'\r\n}\r\nif (Test-Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\NTDS\\Parameters') {\r\n    throw 'AD DS promotion has already started. Restart the VM and verify promotion before retrying.'\r\n}\r\nif ([string]::IsNullOrWhiteSpace($configuration.dsrmPassword)) {\r\n    throw 'A non-empty DSRM password is required.'\r\n}\r\n$dsrmPassword = ConvertTo-SecureString $configuration.dsrmPassword -AsPlainText -Force\r\n$configuration = $null\r\n$ConfigurationBase64 = $null\r\n\r\n# Only the dedicated LUN 0 data disk may be initialized; never format an existing filesystem.\r\n$disks = @(Get-Disk | Where-Object { $_.Location -match 'LUN 0$' -and -not $_.IsBoot -and -not $_.IsSystem })\r\nif ($disks.Count -ne 1) {\r\n    throw 'Expected exactly one non-system data disk at LUN 0.'\r\n}\r\n$disk = $disks[0]\r\n$existingVolume = @(Get-Volume | Where-Object DriveLetter -eq 'F')\r\nif ($disk.PartitionStyle -eq 'RAW') {\r\n    if ($existingVolume.Count -ne 0) {\r\n        throw 'F: is already in use; refusing to initialize the AD data disk.'\r\n    }\r\n    $disk | Initialize-Disk -PartitionStyle GPT -PassThru |\r\n        New-Partition -UseMaximumSize -DriveLetter F |\r\n        Format-Volume -FileSystem NTFS -NewFileSystemLabel 'ADData' -Confirm:$false | Out-Null\r\n}\r\nelse {\r\n    $partition = @(Get-Partition -DiskNumber $disk.Number | Where-Object DriveLetter -eq 'F')\r\n    if ($partition.Count -ne 1 -or $existingVolume.Count -ne 1 -or $existingVolume[0].FileSystemLabel -ne 'ADData') {\r\n        throw 'LUN 0 is not the expected F: ADData volume; refusing to modify it.'\r\n    }\r\n}\r\n\r\n$feature = Install-WindowsFeature AD-Domain-Services -IncludeManagementTools\r\nif (-not $feature.Success -or $feature.RestartNeeded -eq 'Yes') {\r\n    throw 'AD DS feature installation did not finish without a restart. Inspect the feature result and restart before retrying.'\r\n}\r\nImport-Module ADDSDeployment\r\nInstall-ADDSForest -DomainName $domainName -DomainNetbiosName $netbiosName `\r\n    -InstallDns -CreateDnsDelegation:$false `\r\n    -DatabasePath 'F:\\NTDS' -LogPath 'F:\\NTDS' -SysvolPath 'F:\\SYSVOL' `\r\n    -SafeModeAdministratorPassword $dsrmPassword -NoRebootOnCompletion:$true -Force\r\n\r\nWrite-Output 'Forest promotion was initiated successfully. Restart this VM from Azure after provisioning completes, then run Configure-DemoDirectory.ps1 before installing Entra Connect.'\r\n",
+            "bootstrapScript": "[base64(variables('$fxv#0'))]"
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Network/publicIPAddresses",
+              "apiVersion": "2025-07-01",
+              "name": "[format('azbasip{0}', parameters('resourceToken'))]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "sku": {
+                "name": "Standard"
+              },
+              "properties": {
+                "publicIPAllocationMethod": "Static"
+              }
+            },
+            {
+              "type": "Microsoft.Network/bastionHosts",
+              "apiVersion": "2025-07-01",
+              "name": "[format('azbas{0}', parameters('resourceToken'))]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "sku": {
+                "name": "Basic"
+              },
+              "properties": {
+                "ipConfigurations": [
+                  {
+                    "name": "bastion",
+                    "properties": {
+                      "privateIPAllocationMethod": "Dynamic",
+                      "subnet": {
+                        "id": "[parameters('bastionSubnetId')]"
+                      },
+                      "publicIPAddress": {
+                        "id": "[resourceId('Microsoft.Network/publicIPAddresses', format('azbasip{0}', parameters('resourceToken')))]"
+                      }
+                    }
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/publicIPAddresses', format('azbasip{0}', parameters('resourceToken')))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Network/networkInterfaces",
+              "apiVersion": "2025-07-01",
+              "name": "[format('azdcnic{0}', parameters('resourceToken'))]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "properties": {
+                "ipConfigurations": [
+                  {
+                    "name": "primary",
+                    "properties": {
+                      "primary": true,
+                      "privateIPAllocationMethod": "Static",
+                      "privateIPAddress": "[parameters('privateIpAddress')]",
+                      "subnet": {
+                        "id": "[parameters('dcSubnetId')]"
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "type": "Microsoft.Compute/virtualMachines",
+              "apiVersion": "2024-11-01",
+              "name": "[format('azdc{0}', parameters('resourceToken'))]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "properties": {
+                "hardwareProfile": {
+                  "vmSize": "[parameters('vmSize')]"
+                },
+                "osProfile": {
+                  "computerName": "demodc01",
+                  "adminUsername": "[parameters('adminUsername')]",
+                  "adminPassword": "[parameters('adminPassword')]",
+                  "windowsConfiguration": {
+                    "provisionVMAgent": true,
+                    "enableAutomaticUpdates": true
+                  }
+                },
+                "storageProfile": {
+                  "imageReference": {
+                    "publisher": "MicrosoftWindowsServer",
+                    "offer": "WindowsServer",
+                    "sku": "2022-datacenter-g2",
+                    "version": "latest"
+                  },
+                  "osDisk": {
+                    "createOption": "FromImage",
+                    "managedDisk": {
+                      "storageAccountType": "Premium_LRS"
+                    }
+                  },
+                  "dataDisks": [
+                    {
+                      "lun": 0,
+                      "createOption": "Empty",
+                      "diskSizeGB": 32,
+                      "caching": "None",
+                      "managedDisk": {
+                        "storageAccountType": "Premium_LRS"
+                      }
+                    }
+                  ]
+                },
+                "securityProfile": {
+                  "securityType": "TrustedLaunch",
+                  "uefiSettings": {
+                    "secureBootEnabled": true,
+                    "vTpmEnabled": true
+                  }
+                },
+                "networkProfile": {
+                  "networkInterfaces": [
+                    {
+                      "id": "[resourceId('Microsoft.Network/networkInterfaces', format('azdcnic{0}', parameters('resourceToken')))]"
+                    }
+                  ]
+                },
+                "diagnosticsProfile": {
+                  "bootDiagnostics": {
+                    "enabled": true
+                  }
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/networkInterfaces', format('azdcnic{0}', parameters('resourceToken')))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Compute/virtualMachines/extensions",
+              "apiVersion": "2024-11-01",
+              "name": "[format('{0}/{1}', format('azdc{0}', parameters('resourceToken')), 'InstallDemoForest')]",
+              "location": "[parameters('location')]",
+              "properties": {
+                "publisher": "Microsoft.Compute",
+                "type": "CustomScriptExtension",
+                "typeHandlerVersion": "1.10",
+                "autoUpgradeMinorVersion": true,
+                "protectedSettings": {
+                  "commandToExecute": "[format('powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"& ([scriptblock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(''{0}'')))) -ConfigurationBase64 ''{1}''\"', variables('bootstrapScript'), base64(string(createObject('domainName', parameters('domainName'), 'netbiosName', parameters('netbiosName'), 'dsrmPassword', parameters('dsrmPassword')))))]"
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Compute/virtualMachines', format('azdc{0}', parameters('resourceToken')))]"
+              ]
+            }
+          ],
+          "outputs": {
+            "vmName": {
+              "type": "string",
+              "value": "[format('azdc{0}', parameters('resourceToken'))]"
+            },
+            "privateIp": {
+              "type": "string",
+              "value": "[parameters('privateIpAddress')]"
+            },
+            "nicName": {
+              "type": "string",
+              "value": "[format('azdcnic{0}', parameters('resourceToken'))]"
+            },
+            "bastionName": {
+              "type": "string",
+              "value": "[format('azbas{0}', parameters('resourceToken'))]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Resources/deployments', 'domain-controller-network')]"
+      ]
     }
   ],
   "outputs": {
+    "FRONT_DOOR_NAME": {
+      "type": "string",
+      "value": "[variables('frontDoorName')]"
+    },
+    "FRONT_DOOR_ID": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Cdn/profiles', variables('frontDoorName')), '2025-04-15').frontDoorId]"
+    },
+    "FRONT_DOOR_HOSTNAME": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Cdn/profiles/afdEndpoints', variables('frontDoorName'), variables('frontDoorEndpointName')), '2025-04-15').hostName]"
+    },
+    "FRONT_DOOR_URL": {
+      "type": "string",
+      "value": "[format('https://{0}', reference(resourceId('Microsoft.Cdn/profiles/afdEndpoints', variables('frontDoorName'), variables('frontDoorEndpointName')), '2025-04-15').hostName)]"
+    },
     "APPLICATION_GATEWAY_FQDN": {
       "type": "string",
       "value": "[reference(resourceId('Microsoft.Network/publicIPAddresses', variables('publicIpName')), '2025-07-01').dnsSettings.fqdn]"
@@ -988,6 +2072,58 @@
     "STORAGE_ACCOUNT_NAME": {
       "type": "string",
       "value": "[variables('storageAccountName')]"
+    },
+    "APP_SERVICE_NAME": {
+      "type": "string",
+      "value": "[variables('webAppName')]"
+    },
+    "APP_SERVICE_DEFAULT_HOSTNAME": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Web/sites', variables('webAppName')), '2024-11-01').defaultHostName]"
+    },
+    "WEB_APP_IDENTITY_NAME": {
+      "type": "string",
+      "value": "[variables('webAppIdentityName')]"
+    },
+    "WEB_APP_IDENTITY_CLIENT_ID": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('webAppIdentityName')), '2024-11-30').clientId]"
+    },
+    "WEB_APP_IDENTITY_PRINCIPAL_ID": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('webAppIdentityName')), '2024-11-30').principalId]"
+    },
+    "SQL_SERVER_FQDN": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Sql/servers', variables('sqlServerName')), '2023-08-01').fullyQualifiedDomainName]"
+    },
+    "SQL_DATABASE_NAME": {
+      "type": "string",
+      "value": "[variables('sqlDatabaseName')]"
+    },
+    "SQL_TENANT_ID": {
+      "type": "string",
+      "value": "[tenant().tenantId]"
+    },
+    "DOMAIN_CONTROLLER_NAME": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'domain-controller'), '2025-04-01').outputs.vmName.value]"
+    },
+    "DOMAIN_CONTROLLER_PRIVATE_IP": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'domain-controller'), '2025-04-01').outputs.privateIp.value]"
+    },
+    "DOMAIN_CONTROLLER_NIC_NAME": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'domain-controller'), '2025-04-01').outputs.nicName.value]"
+    },
+    "AD_DOMAIN_NAME": {
+      "type": "string",
+      "value": "[parameters('adDomainName')]"
+    },
+    "BASTION_NAME": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'domain-controller'), '2025-04-01').outputs.bastionName.value]"
     }
   }
 }

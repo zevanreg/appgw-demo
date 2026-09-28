@@ -2,6 +2,15 @@
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
   "contentVersion": "1.0.0.0",
   "parameters": {
+    "dcAdminUsername": {
+      "value": "demoadmin"
+    },
+    "adDomainName": {
+      "value": "ad.demo.test"
+    },
+    "adNetbiosName": {
+      "value": "DEMO"
+    },
     "environmentName": {
       "value": "${AZURE_ENV_NAME}"
     },
@@ -10,6 +19,21 @@
     },
     "resourceGroupName": {
       "value": "rg-${AZURE_ENV_NAME}"
+    },
+    "dcAdminPassword": {
+      "value": "${DC_ADMIN_PASSWORD}"
+    },
+    "dsrmPassword": {
+      "value": "${DSRM_PASSWORD}"
+    },
+    "sqlAdminObjectId": {
+      "value": "${SQL_ADMIN_OBJECT_ID}"
+    },
+    "sqlAdminLogin": {
+      "value": "${SQL_ADMIN_LOGIN}"
+    },
+    "sqlAdminPrincipalType": {
+      "value": "${SQL_ADMIN_PRINCIPAL_TYPE=Group}"
     }
   }
 }
